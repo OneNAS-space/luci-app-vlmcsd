@@ -65,7 +65,7 @@ jobs:
           PKG_VERSION=$(date -u +'%y.%j')
           PKG_RELEASE=$(date -u +'%s' | cut -c6-10)
 
-          echo "Using version: ${PKG_VERSION}-${PKG_RELEASE}"
+          echo "Using version: ${PKG_VERSION}-r${PKG_RELEASE}"
 
           MF="feed/luci/applications/${PKG_NAME}/Makefile"
 
@@ -90,7 +90,7 @@ jobs:
           
           echo "Patched Makefile:"
           grep -E 'PKG_VERSION|PKG_RELEASE' "$MF"
-          echo "version=${PKG_VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${PKG_VERSION}-r${PKG_RELEASE}" >> $GITHUB_OUTPUT
           
       - name: 🧮 Compute ARCH
         run: |
