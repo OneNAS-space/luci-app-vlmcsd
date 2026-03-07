@@ -12,8 +12,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  check:
+    name: 1. Resolve Version
+    runs-on: ubuntu-latest
+    outputs:
+      resolved_tag: ${{ steps.resolve.outputs.version }}
+      pkg_version: ${{ steps.resolve.outputs.pkg_version }}
+      pkg_release: ${{ steps.resolve.outputs.pkg_release }}
+      should_build: "true"
+    steps:
+      - name: 🧾 Generate Dynamic Version
+        id: resolve
+        run: |
+          PKG_VERSION=$(date -u +'%y.%j')
+          PKG_RELEASE=$(date -u +'%s' | cut -c6-10)
+          FULL_VER="${PKG_VERSION}-r${PKG_RELEASE}"
+          
+          echo "Generated version: $FULL_VER"
+          echo "version=$FULL_VER" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "pkg_release=$PKG_RELEASE" >> "$GITHUB_OUTPUT"
+
   build:
-    name: Build for ${{ matrix.version }} / ${{ matrix.target }}
+    name: 2. Build for ${{ matrix.version }} / ${{ matrix.target }}
+    needs: check
     runs-on: ubuntu-latest
 
     strategy:
@@ -27,15 +49,14 @@ jobs:
             target: x86_64
             suffix: noarch
 
-    outputs:
-      version: ${{ steps.patch_version.outputs.version }}
-
     steps:
       - name: 🧾 Checkout repo
         uses: actions/checkout@v6
 
-      - name: 📛 Set PKG_NAME from repo
-        run: echo "PKG_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
+      - name: 📛 Set Environment
+        run: |
+          echo "PKG_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
+          echo "ARCH=${{ matrix.target }}-${{ matrix.version }}" >> "$GITHUB_ENV"
 
       - name: 🧰 Set up luci-app-vlmcsd feed structure
         run: |
@@ -62,10 +83,10 @@ jobs:
         id: patch_version
         run: |
           set -euo pipefail
-          PKG_VERSION=$(date -u +'%y.%j')
-          PKG_RELEASE=$(date -u +'%s' | cut -c6-10)
+          V="${{ needs.check.outputs.pkg_version }}"
+          R="${{ needs.check.outputs.pkg_release }}"
 
-          echo "Using version: ${PKG_VERSION}-r${PKG_RELEASE}"
+          echo "Using version: ${V}-r${R}"
 
           MF="feed/luci/applications/${PKG_NAME}/Makefile"
 
@@ -73,28 +94,18 @@ jobs:
           sed -i '/^PKG_RELEASE/d' "$MF"
           if grep -q '^PKG_NAME' "$MF"; then
             echo "Found PKG_NAME, inserting after it"
-            sed -i "/^PKG_NAME/a PKG_RELEASE:=${PKG_RELEASE}" "$MF"
-            sed -i "/^PKG_NAME/a PKG_VERSION:=${PKG_VERSION}" "$MF"
+            sed -i "/^PKG_NAME/a PKG_RELEASE:=${R}" "$MF"
+            sed -i "/^PKG_NAME/a PKG_VERSION:=${V}" "$MF"
           elif grep -q '^LUCI_NAME' "$MF"; then
             echo "Found LUCI_NAME, inserting after it"
-            sed -i "/^LUCI_NAME/a PKG_RELEASE:=${PKG_RELEASE}" "$MF"
-            sed -i "/^LUCI_NAME/a PKG_VERSION:=${PKG_VERSION}" "$MF"
+            sed -i "/^LUCI_NAME/a PKG_RELEASE:=${R}" "$MF"
+            sed -i "/^LUCI_NAME/a PKG_VERSION:=${V}" "$MF"
           else
-            echo "No PKG_NAME or LUCI_NAME, inserting at top"
-            { 
-              printf 'PKG_VERSION:=%s\n' "$PKG_VERSION"
-              printf 'PKG_RELEASE:=%s\n' "$PKG_RELEASE"
-              cat "$MF"
-            } > "$MF.new" && mv "$MF.new" "$MF"
+            echo "PKG_VERSION:=${V}" > "$MF.tmp"
+            echo "PKG_RELEASE:=${R}" >> "$MF.tmp"
+            cat "$MF" >> "$MF.tmp"
+            mv "$MF.tmp" "$MF"
           fi
-          
-          echo "Patched Makefile:"
-          grep -E 'PKG_VERSION|PKG_RELEASE' "$MF"
-          echo "version=${PKG_VERSION}-r${PKG_RELEASE}" >> $GITHUB_OUTPUT
-          
-      - name: 🧮 Compute ARCH
-        run: |
-          echo "ARCH=${{ matrix.target }}-${{ matrix.version }}" >> "$GITHUB_ENV"
 
       - name: 🏗️ Build with OpenWrt SDK
         uses: openwrt/gh-action-sdk@v10
@@ -130,8 +141,8 @@ jobs:
           if-no-files-found: ignore
 
   release:
-    name: Release ${{ github.repository }}
-    needs: build
+    name: 3. Release & Deploy ${{ github.repository }}
+    needs: [check, build]
     runs-on: ubuntu-latest
 
     steps:
@@ -146,8 +157,8 @@ jobs:
       - name: 🗃️ Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.build.outputs.version }}
-          name: Build-v${{ needs.build.outputs.version }}
+          tag_name: v${{ needs.check.outputs.resolved_tag }}
+          name: Build-v${{ needs.check.outputs.resolved_tag }}
           files: |
             ./release-assets/**/*.ipk
             ./release-assets/**/*.apk
@@ -156,14 +167,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout custom-packages repo
+      - name: 🔑 Checkout custom-packages repo
         uses: actions/checkout@v6
         with:
           repository: OneNAS-space/custom-packages
           token: ${{ secrets.CUSTOM_PACKAGES_TOKEN }}
           path: custom-packages
 
-      - name: Update luci artifacts
+      - name: 🚚 Update luci artifacts
         run: |
           set -e
           CURRENT_PKG="${{ github.event.repository.name }}"
@@ -191,5 +202,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 24.10/luci/ 25.12/luci
-          git commit -m "Update $CURRENT_PKG to v${{ needs.build.outputs.version }}" || echo "No changes"
-          git push
+          git commit -m "Update $CURRENT_PKG to v${{ needs.check.outputs.resolved_tag }}" || echo "No changes"
+          for i in {1..5}; do
+            git pull --rebase origin main && \
+            git push origin main && break || \
+            (echo "Conflict detected, retrying in 5s..." && sleep 5)
+          done
