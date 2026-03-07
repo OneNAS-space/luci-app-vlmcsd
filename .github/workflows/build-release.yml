@@ -23,6 +23,10 @@ jobs:
           - version: openwrt-24.10
             target: x86_64
             suffix: all
+          - version: openwrt-25.12
+            target: x86_64
+            suffix: noarch
+
     outputs:
       version: ${{ steps.patch_version.outputs.version }}
 
@@ -61,7 +65,7 @@ jobs:
           PKG_VERSION=$(date -u +'%y.%j')
           PKG_RELEASE=$(date -u +'%s' | cut -c6-10)
 
-          echo "Using version: ${PKG_VERSION}-${PKG_RELEASE}"
+          echo "Using version: ${PKG_VERSION}-r${PKG_RELEASE}"
 
           MF="feed/luci/applications/${PKG_NAME}/Makefile"
 
@@ -86,7 +90,7 @@ jobs:
           
           echo "Patched Makefile:"
           grep -E 'PKG_VERSION|PKG_RELEASE' "$MF"
-          echo "version=${PKG_VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${PKG_VERSION}-r${PKG_RELEASE}" >> $GITHUB_OUTPUT
           
       - name: 🧮 Compute ARCH
         run: |
@@ -122,6 +126,7 @@ jobs:
           name: ${{ env.PKG_NAME }}-${{ matrix.target }}-${{ matrix.version }}
           path: |
             bin/packages/*/jackie264/${{ env.PKG_NAME }}*.ipk
+            bin/packages/*/jackie264/${{ env.PKG_NAME }}*.apk
           if-no-files-found: ignore
 
   release:
@@ -145,6 +150,7 @@ jobs:
           name: Build-v${{ needs.build.outputs.version }}
           files: |
             ./release-assets/**/*.ipk
+            ./release-assets/**/*.apk
           draft: false
           prerelease: false
         env:
@@ -159,20 +165,31 @@ jobs:
 
       - name: Update luci artifacts
         run: |
-          mkdir -p custom-packages/luci
-          
-          find ./release-assets -type f -name "*.ipk" | while read -r f; do
+          set -e
+          CURRENT_PKG="${{ github.event.repository.name }}"
+          mkdir -p custom-packages/24.10/luci
+          mkdir -p custom-packages/25.12/luci
+          echo "Cleaning all old versions for $CURRENT_PKG before updating..."
+          rm -f custom-packages/24.10/luci/${CURRENT_PKG}_*.ipk
+          rm -f custom-packages/25.12/luci/${CURRENT_PKG}-*.apk
+          find ./release-assets -type f \( -name "*.ipk" -o -name "*.apk" \) | while read -r f; do
             base=$(basename "$f")
-            pkgname=$(echo "$base" | sed -E 's/^([^_]+)_.*$/\1/')
-            echo "Cleaning old versions of $pkgname"
-            rm -f custom-packages/luci/${pkgname}_*.ipk
-            cp "$f" custom-packages/luci/
+            if [[ "$base" == *.ipk ]]; then
+              echo "Deploying $base to 24.10/luci/"
+              cp "$f" custom-packages/24.10/luci/
+            elif [[ "$base" == *.apk ]]; then
+              echo "Deploying $base to 25.12/luci/"
+              cp "$f" custom-packages/25.12/luci/
+            fi
           done
-          ls -la custom-packages/luci/
-          echo "PKG_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
+          echo "=== 24.10 Content ==="
+          ls -la custom-packages/24.10/luci/${CURRENT_PKG}* || echo "No IPKs found"
+          echo "=== 25.12 Content ==="
+          ls -la custom-packages/25.12/luci/${CURRENT_PKG}* || echo "No APKs found"
+
           cd custom-packages
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add luci/
-          git commit -m "Update to - v${{ needs.build.outputs.version }}" || echo "No changes"
+          git add 24.10/luci/ 25.12/luci
+          git commit -m "Update $CURRENT_PKG to v${{ needs.build.outputs.version }}" || echo "No changes"
           git push
