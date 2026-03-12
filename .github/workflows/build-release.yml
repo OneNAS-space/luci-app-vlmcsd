@@ -26,7 +26,7 @@ jobs:
         run: |
           PKG_VERSION=$(date -u +'%y.%j')
           PKG_RELEASE=$(date -u +'%s' | cut -c6-10)
-          FULL_VER="${PKG_VERSION}-r${PKG_RELEASE}"
+          FULL_VER="v${PKG_VERSION}-r${PKG_RELEASE}"
           
           echo "Generated version: $FULL_VER"
           echo "version=$FULL_VER" >> "$GITHUB_OUTPUT"
@@ -157,8 +157,8 @@ jobs:
       - name: 🗃️ Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check.outputs.resolved_tag }}
-          name: Build-v${{ needs.check.outputs.resolved_tag }}
+          tag_name: ${{ needs.check.outputs.resolved_tag }}
+          name: Build-${{ needs.check.outputs.resolved_tag }}
           files: |
             ./release-assets/**/*.ipk
             ./release-assets/**/*.apk
@@ -202,7 +202,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 24.10/luci/ 25.12/luci
-          git commit -m "Update $CURRENT_PKG to v${{ needs.check.outputs.resolved_tag }}" || echo "No changes"
+          git commit -m "Update $CURRENT_PKG to ${{ needs.check.outputs.resolved_tag }}" || echo "No changes"
           for i in {1..5}; do
             git pull --rebase origin main && \
             git push origin main && break || \
